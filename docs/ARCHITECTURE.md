@@ -1,6 +1,7 @@
 # 架构说明
 
-本文说明 `esp-aichat` 整体是怎么跑起来的，以及原来 5 个独立示例是如何合并进来的。
+本文说明 `esp-aichat` 整体是怎么跑起来的：分层结构、运行状态机、与大模型服务端的
+通信协议，以及几个关键设计取舍。
 
 ## 1. 分层结构
 
@@ -82,7 +83,7 @@ stateDiagram-v2
 
 ## 4. 本地命令词
 
-命令词表在 `main/voice_engine.cc`（**唯一的一份**，原示例里重复了两份）：
+命令词表在 `main/voice_engine.cc` 的 `kCommands[]`：
 
 | ID | 拼音 | 中文 | 动作 |
 | --- | --- | --- | --- |
@@ -91,31 +92,23 @@ stateDiagram-v2
 | 314 | `bai bai` | 拜拜 | 播放再见音并退出对话 |
 | 315 | `xian zai an quan wu qing kuang ru he` | 现在安全屋情况如何 | 播放自定义音频 |
 
-命令 ID 沿用 ESP-SR/原示例的约定（308/309/314 与 MultiNet 内置中文命令表一致），
+命令 ID 沿用 ESP-SR 的约定（308/309/314 与 MultiNet 内置中文命令表一致），
 不要随意改动。想加新命令：在 `kCommands[]` 里加一行，再在
 `main.cc` 的 `run_local_command()` 里加一个分支。
 
-## 5. 合并映射：原来 5 个示例去哪了
+## 5. 设计取舍与原因
 
-| 原示例 | 原位置 | 现在的位置 |
+| 决策 | 原因 | 代价 |
 | --- | --- | --- |
-| `control-led` | GPIO/按键小实验 | `components/led_control/`、`components/button_control/`（按键改为**按键唤醒**） |
-| `wake_word_detection` | 唤醒词 + LED 闪烁 | `main/voice_engine.cc` 的 `detect_wake()` |
-| `speech_commands_recognition` | 唤醒 + 命令词 + LED | `main/voice_engine.cc` 的 `detect_command()` + `main.cc` 的 `run_local_command()` |
-| `control_servo` | 命令词 → 舵机 | `components/servo_control/`（在 `run_local_command()` 里作为开关灯的物理反馈） |
-| `speech_commands_recognition_with_llm` | 唤醒 + 命令词 + 大模型 | `components/{bsp_board,audio_manager,wifi_manager,ws_client}` + `main.cc` 状态机 + `server/` |
-
-合并时做的取舍：
-
-- **BSP 以 LLM 版为准**：LLM 版的 `bsp_board` 是更新的一版（同一份 I2S 实现），
-  其余示例的 BSP 是它的旧副本，已丢弃重复文件。
-- **`main.cc` 只有一个**：原来的命令词 `main.cc`（22KB）和舵机版 `main.cc`（21KB）
-  几乎逐行相同、且 LLM 版是超集，所以以 LLM 版的状态机为骨架，
-  把“本地命令词识别”从“仅连续对话时”改为“听写时一直开启”。
-- **素材只留一份**：`mock_voices/*.h` 原来每个示例各存一份（单文件最大 3MB），
-  现在统一放在 `components/voice_assets/`，并由 `assets/` 里的 mp3 生成。
-- **重复的 tools/server**：3 份一模一样的 `convert_audio.py`、`multinet_pinyin.py`
-  只保留 1 份在 `tools/`；`server/` 从 LLM 示例原样迁移。
+| 外设与网络拆成 `components/` 组件 | 依赖单向（`main → components → ESP-IDF`），硬件层、网络层与业务解耦；换板子或换通信方式只需要动一个组件 | 组件边界需要维护，`INCLUDE_DIRS` / `REQUIRES` 必须写清楚 |
+| 业务全部收在 `main/` 的单个状态机里 | 整条链路的上下文（状态、计时、缓冲）在同一处，改动时不必跨文件追状态 | `main.cc` 偏长，功能继续变多时要再拆 |
+| 命令词识别优先于音频上传 | 本地命令零延迟；命中后立刻发 `recording_cancelled`，服务端不会收到半句话 | 命令词识别每帧都要跑，占一部分 CPU |
+| 唤醒词与命令词跑在同一帧音频上 | 一次采集喂两个模型，不需要两套 I2S 读取 | 两个模型共享内存预算（都放在 PSRAM） |
+| 提示音以 C 头文件形式编译进固件 | 不需要文件系统挂载，启动即可播放，时序可控 | 固件体积变大（`custom.h` 一个文件就有 3MB 量级的数据） |
+| 所有参数走 `menuconfig` | 换 WiFi / 引脚 / 超时不必改代码，配置随 `sdkconfig` 固化下来 | 参数分散在 Kconfig 与 `app_config.h` 两处 |
+| 提示音播放与舵机动作使用阻塞调用 | 实现简单、时序确定，动作与提示音天然不会互相打断 | 阻塞期间不采音（见第 6 节） |
+| 依赖版本硬锁定（`esp-sr == 2.1.3`、`esp_websocket_client == 1.4.0`） | 保证任何人 clone 下来都能编过；`esp-sr >= 2.2` 会引入要求 ESP-IDF ≥ 5.5 的 `esp-dl` | 不会自动获得依赖的新版本，升级需要手动验证 |
+| 分区固定为 app 3MB + model 6MB | 语音模型必须占用独立分区；当前固件 1.87MB，留有余量 | 调整模型数量或体积时需要同步改 `partitions.csv` 与 `sdkconfig` |
 
 ## 6. 已知限制
 
