@@ -1,6 +1,6 @@
 /**
  * @file voice_engine.cc
- * @brief 语音识别引擎实现（基于 ESP-SR）
+ * @brief 语音识别引擎实现（ESP-SR）。
  */
 
 #include "voice_engine.h"
@@ -59,7 +59,7 @@ VoiceEngine::~VoiceEngine()
 
 esp_err_t VoiceEngine::init()
 {
-    ESP_LOGI(TAG, "加载语音识别模型...");
+    ESP_LOGI(TAG, "加载语音识别模型");
 
     // 内存自检：语音模型加载至少需要 100KB 可用内存
     size_t free_heap = heap_caps_get_free_size(MALLOC_CAP_8BIT);
@@ -94,7 +94,7 @@ esp_err_t VoiceEngine::init()
 
     load_noise_suppression(); // 可选能力，失败不影响主流程
 
-    ESP_LOGI(TAG, "✓ 语音引擎就绪（唤醒词: %s / 命令词: %s / 降噪: %s）",
+    ESP_LOGI(TAG, "语音引擎就绪（唤醒词: %s / 命令词: %s / 降噪: %s）",
              wake_model_, command_model_,
              noise_suppression_enabled() ? "开" : "关");
     return ESP_OK;
@@ -112,7 +112,7 @@ esp_err_t VoiceEngine::load_models()
         models_ = esp_srmodel_init("model");
         if (models_ == nullptr)
         {
-            ESP_LOGW(TAG, "模型列表加载失败，第 %d 次重试...", retry + 1);
+            ESP_LOGW(TAG, "模型列表加载失败，第 %d 次重试", retry + 1);
         }
     }
 
@@ -155,7 +155,7 @@ esp_err_t VoiceEngine::load_wake_model()
 
     int chunk_samples = wakenet->get_samp_chunksize(data);
     frame_bytes_ = chunk_samples * sizeof(int16_t);
-    ESP_LOGI(TAG, "✓ 唤醒词模型: %s（每帧 %d 样本 / %d 字节）", name, chunk_samples, frame_bytes_);
+    ESP_LOGI(TAG, "唤醒词模型: %s（每帧 %d 样本 / %d 字节）", name, chunk_samples, frame_bytes_);
     return ESP_OK;
 }
 
@@ -188,7 +188,7 @@ esp_err_t VoiceEngine::load_command_model()
     }
     mn_data_ = data;
 
-    ESP_LOGI(TAG, "✓ 命令词模型: %s", name);
+    ESP_LOGI(TAG, "命令词模型: %s", name);
     return configure_commands();
 }
 
@@ -217,12 +217,12 @@ esp_err_t VoiceEngine::configure_commands()
         if (ret == ESP_OK)
         {
             ok_count++;
-            ESP_LOGI(TAG, "  + 命令 %d: %s (%s)", cmd->id, cmd->description, cmd->pinyin);
+            ESP_LOGI(TAG, "命令 %d: %s (%s)", cmd->id, cmd->description, cmd->pinyin);
         }
         else
         {
             fail_count++;
-            ESP_LOGE(TAG, "  ✗ 命令 %d 添加失败: %s", cmd->id, esp_err_to_name(ret));
+            ESP_LOGE(TAG, "命令 %d 添加失败: %s", cmd->id, esp_err_to_name(ret));
         }
     }
 
@@ -275,7 +275,7 @@ void VoiceEngine::load_noise_suppression()
         return;
     }
 
-    ESP_LOGI(TAG, "✓ 噪声抑制模型: %s（每帧 %d 样本）", name, nsn_chunk_);
+    ESP_LOGI(TAG, "噪声抑制模型: %s（每帧 %d 样本）", name, nsn_chunk_);
 }
 
 const int16_t *VoiceEngine::denoise(const int16_t *pcm, int samples)
@@ -321,7 +321,7 @@ int VoiceEngine::detect_command(const int16_t *pcm)
     esp_mn_state_t state = mn->detect(data, (int16_t *)pcm);
     if (state == ESP_MN_STATE_TIMEOUT)
     {
-        // MultiNet 自己的识别窗口到期（本工程用统一的等待超时控制，这里忽略）
+        // MultiNet 自身的识别窗口到期；等待超时统一由主循环控制，这里忽略
         ESP_LOGD(TAG, "命令词识别窗口超时");
         return VOICE_CMD_NONE;
     }
@@ -337,7 +337,7 @@ int VoiceEngine::detect_command(const int16_t *pcm)
     }
 
     int command_id = result->command_id[0];
-    ESP_LOGI(TAG, "🎯 命中命令: id=%d 置信度=%.2f 文本=\"%s\" (%s)",
+    ESP_LOGI(TAG, "命中命令: id=%d 置信度=%.2f 文本=\"%s\" (%s)",
              command_id, result->prob[0], result->string, describe(command_id));
     return command_id;
 }

@@ -1,22 +1,9 @@
 /**
  * @file audio_manager.h
- * @brief 🎧 音频管理器类 - 统一管理音频的录制和播放
- * 
- * 这个类就像一个“音频指挥家”，负责协调所有音频相关的工作：
- * 
- * 🎙️ 录音功能：
- * - 管理录音缓冲区（最多10秒）
- * - 控制录音的开始/停止
- * - 跟踪录音时长
- * 
- * 🔊 播放功能：
- * - 播放本地音频文件
- * - 流式播放网络音频
- * - 缓冲区管理，避免卡顿
- * 
- * 🌐 网络功能：
- * - 接收WebSocket音频流
- * - 处理不同采样率的音频
+ * @brief AudioManager：录音缓冲、整段播放与流式播放
+ *
+ * 三块缓冲区都在 init() 中一次性分配，失败返回 ESP_ERR_NO_MEM 并回滚已分配的内存。
+ * addRecordingData() 的 samples 是样本数而非字节数。
  */
 
 #ifndef AUDIO_MANAGER_H
@@ -30,226 +17,93 @@
 
 class AudioManager {
 public:
-    /**
-     * @brief 创建音频管理器
-     * 
-     * @param sample_rate 采样率（默认16000Hz，人声标准）
-     * @param recording_duration_sec 最大录音时长（默认10秒）
-     * @param response_duration_sec AI回复最大时长（默认32秒）
-     */
+    // 采样率默认 16kHz；录音上限 10 秒，单次回复音频上限 32 秒
     AudioManager(uint32_t sample_rate = 16000, 
                  uint32_t recording_duration_sec = 10,
                  uint32_t response_duration_sec = 32);
     
-    /**
-     * @brief 析构函数，释放所有分配的内存
-     */
     ~AudioManager();
 
-    /**
-     * @brief 初始化音频管理器
-     * 
-     * 这个函数会分配所需的内存缓冲区。
-     * 必须在使用其他功能前调用。
-     * 
-     * @return ESP_OK=成功，ESP_ERR_NO_MEM=内存不足
-     */
+    // 三块缓冲区一次性分配；内存不足返回 ESP_ERR_NO_MEM，且不留下已分配的缓冲区
     esp_err_t init();
 
-    /**
-     * @brief 反初始化，释放资源
-     */
     void deinit();
 
-    // 🎙️ ========== 录音相关功能 ==========
-    
-    /**
-     * @brief 开始录音
-     */
     void startRecording();
 
-    /**
-     * @brief 停止录音
-     */
     void stopRecording();
 
-    /**
-     * @brief 查询录音状态
-     * 
-     * @return true=正在录音中，false=没在录音
-     */
     bool isRecording() const { return is_recording; }
 
-    /**
-     * @brief 添加音频数据到录音缓冲区
-     * 
-     * 每次从麦克风读到数据后，用这个函数保存起来。
-     * 
-     * @param data 音频数据指针
-     * @param samples 样本数量（注意：不是字节数！）
-     * @return true=添加成功，false=缓冲区满了
-     */
+    // samples 为样本数；缓冲区剩余空间不足时返回 false，本次数据整体丢弃
     bool addRecordingData(const int16_t* data, size_t samples);
 
-    /**
-     * @brief 获取录音数据
-     * 
-     * 用于获取已经录制的全部音频数据。
-     * 
-     * @param[out] length 会被设置为录音的样本数
-     * @return 指向录音数据的指针
-     */
+    // length 返回当前录音的样本数
     const int16_t* getRecordingBuffer(size_t& length) const;
 
-    /**
-     * @brief 清空录音缓冲区
-     */
     void clearRecordingBuffer();
 
-    /**
-     * @brief 获取已录音时间
-     * 
-     * @return 录音时长（单位：秒）
-     */
+    // 返回秒数
     float getRecordingDuration() const;
 
-    /**
-     * @brief 检查录音缓冲区是否已满
-     * 
-     * @return true 已满，false 未满
-     */
     bool isRecordingBufferFull() const;
 
-    // 🔊 ========== 音频播放相关功能 ==========
-
-    /**
-     * @brief 开始接收响应音频数据（用于WebSocket）
-     */
+    // 整段播放：一次收完完整回复音频再播放
     void startReceivingResponse();
 
-    /**
-     * @brief 添加响应音频数据块
-     * 
-     * @param data 音频数据
-     * @param size 数据大小（字节）
-     * @return true 成功，false 失败（缓冲区溢出等）
-     */
+    // 覆盖式写入；size 超过 response_buffer_size 时返回 false
     bool addResponseData(const uint8_t* data, size_t size);
 
-    /**
-     * @brief 完成响应音频接收并播放
-     * 
-     * @return esp_err_t 播放结果
-     */
     esp_err_t finishResponseAndPlay();
     
-    // 🌊 ========== 流式播放功能（边下载边播放） ==========
+    // 流式播放：按 32KB 环形缓冲累积，满一块（200ms）推一次 I2S
     
-    /**
-     * @brief 开始流式播放模式
-     * 
-     * 调用后可以不断添加音频数据块，实现边下载边播放。
-     */
     void startStreamingPlayback();
     
-    /**
-     * @brief 添加一小段音频到播放队列
-     * 
-     * 在流式播放模式下，不断调用这个函数添加新的音频段。
-     * 
-     * @param data 音频数据
-     * @param size 数据字节数
-     * @return true=添加成功，false=缓冲区满
-     */
+    // 环形缓冲区空间不足时返回 false，调用方可稍后重试
     bool addStreamingAudioChunk(const uint8_t* data, size_t size);
     
-    /**
-     * @brief 结束流式播放
-     * 
-     * 播放剩余的音频数据并停止流式模式。
-     */
     void finishStreamingPlayback();
     
-    /**
-     * @brief 检查流式播放是否正在进行
-     * 
-     * @return true 正在播放，false 未在播放
-     */
     bool isStreamingActive() const { return is_streaming; }
     
-    /**
-     * @brief 标记流式播放已完成
-     */
     void setStreamingComplete() { response_played = true; }
 
-    /**
-     * @brief 播放一段完整的音频
-     * 
-     * 用于播放本地存储的音频文件，一次性播放完毕。
-     * 
-     * @param audio_data 音频数据（PCM格式）
-     * @param data_len 数据字节数
-     * @param description 音频描述（如“欢迎音频”）
-     * @return ESP_OK=播放成功
-     */
+    // description 仅用于日志
     esp_err_t playAudio(const uint8_t* audio_data, size_t data_len, const char* description);
 
-    /**
-     * @brief 查询AI回复是否播放完成
-     * 
-     * @return true=已播放完成，false=还没播完
-     */
     bool isResponsePlayed() const { return response_played; }
 
-    /**
-     * @brief 重置响应播放标志
-     */
     void resetResponsePlayedFlag() { response_played = false; }
 
 
-    // 🔧 ========== 工具函数 ==========
-
-    /**
-     * @brief 获取采样率
-     * 
-     * @return 采样率（Hz）
-     */
     uint32_t getSampleRate() const { return sample_rate; }
 
-    /**
-     * @brief 获取录音缓冲区大小（样本数）
-     * 
-     * @return 缓冲区大小
-     */
+    // 单位是样本数
     size_t getRecordingBufferSize() const { return recording_buffer_size; }
 
-    /**
-     * @brief 获取响应缓冲区大小（字节）
-     * 
-     * @return 缓冲区大小
-     */
+    // 单位是字节数
     size_t getResponseBufferSize() const { return response_buffer_size; }
 
 private:
-    // 🎶 音频参数
     uint32_t sample_rate;               // 采样率（Hz）
     uint32_t recording_duration_sec;    // 最大录音时长（秒）
     uint32_t response_duration_sec;     // 最大回复时长（秒）
 
-    // 🎙️ 录音相关变量
+    // 录音
     int16_t* recording_buffer;          // 录音数据缓冲区
     size_t recording_buffer_size;       // 缓冲区大小（样本数）
     size_t recording_length;            // 已录制的样本数
     bool is_recording;                  // 是否正在录音
 
-    // 🔊 响应音频相关变量
+    // 响应音频
     int16_t* response_buffer;           // AI回复音频缓冲区
     size_t response_buffer_size;        // 缓冲区大小（字节数）
     size_t response_length;             // 已接收的样本数
     bool response_played;               // 是否已播放完成
 
     
-    // 🌊 流式播放相关变量
+    // 流式播放
     bool is_streaming;                  // 是否在流式播放中
     uint8_t* streaming_buffer;          // 环形缓冲区
     size_t streaming_buffer_size;       // 缓冲区大小
@@ -258,7 +112,6 @@ private:
     static const size_t STREAMING_BUFFER_SIZE = 32768; // 32KB环形缓冲区
     static const size_t STREAMING_CHUNK_SIZE = 3200;   // 每次播放3200字节（200ms）
 
-    // 🏷️ 日志标签
     static const char* TAG;
 };
 

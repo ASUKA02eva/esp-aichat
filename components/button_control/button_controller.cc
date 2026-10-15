@@ -1,6 +1,6 @@
 /**
  * @file button_controller.cc
- * @brief 外接按键控制器实现
+ * @brief 外接按键控制器实现。
  */
 
 #include "button_controller.h"
@@ -24,7 +24,7 @@ ButtonController::ButtonController(gpio_num_t pin, bool active_high)
 
 esp_err_t ButtonController::init()
 {
-    ESP_LOGI(TAG, "初始化按键 (GPIO%d, 按下为%s电平)...",
+    ESP_LOGI(TAG, "初始化按键（GPIO%d，按下为%s电平）",
              pin_, active_high_ ? "高" : "低");
 
     gpio_config_t io_conf = {};
@@ -42,7 +42,7 @@ esp_err_t ButtonController::init()
     }
 
     initialized_ = true;
-    ESP_LOGI(TAG, "✓ 按键初始化成功 (GPIO%d)", pin_);
+    ESP_LOGI(TAG, "按键初始化完成（GPIO%d）", pin_);
     return ESP_OK;
 }
 
@@ -76,7 +76,7 @@ bool ButtonController::consume_press()
 
     if (triggered)
     {
-        ESP_LOGI(TAG, "🖲️ 检测到按键按下");
+        ESP_LOGI(TAG, "检测到按键按下");
     }
     return triggered;
 }

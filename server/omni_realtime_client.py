@@ -18,10 +18,10 @@ class TurnDetectionMode(Enum):
 
 class OmniRealtimeClient:
     """
-    服务器版本的 Omni Realtime API 客户端
-    - 隐藏敏感信息（API Key）
-    - 优化日志输出，避免token级别的输出
-    - 收集完整的文本响应后统一输出
+    DashScope Omni Realtime API 的 WebSocket 客户端（服务器版）。
+
+    MANUAL 模式下不启用服务端 VAD，需由调用方显式调用 create_response()；
+    文本与音频结果经回调下发，日志不逐 token 打印、不输出完整 API Key。
     """
 
     def __init__(
@@ -39,7 +39,7 @@ class OmniRealtimeClient:
         extra_event_handlers: Optional[
             Dict[str, Callable[[Dict[str, Any]], None]]
         ] = None,
-        enable_verbose_logging: bool = False,  # 新增：控制详细日志
+        enable_verbose_logging: bool = False,  # 为 True 时打印全部事件与发送内容，仅调试用
     ):
         self.base_url = base_url
         self.api_key = api_key
@@ -81,9 +81,9 @@ class OmniRealtimeClient:
             with open(prompt_file_path, "r", encoding="utf-8") as f:
                 self._system_prompt = f.read().strip()
                 # 不显示文件路径，避免暴露目录结构
-                print(f"✅ 已加载系统提示词")
+                print(f"已加载系统提示词")
         except Exception as e:
-            print(f"⚠️ 无法读取系统提示词文件: {e}")
+            print(f"无法读取系统提示词文件: {e}")
             print(f"   使用默认提示词")
             self._system_prompt = default_prompt
 
@@ -96,7 +96,7 @@ class OmniRealtimeClient:
         
         # 隐藏API Key，只显示前后几位
         masked_key = self._mask_api_key(self.api_key)
-        print(f"🔗 连接到大模型服务")
+        print(f"连接到大模型服务")
         print(f"   URL: {self.base_url}")
         print(f"   模型: {self.model}")
         print(f"   API Key: {masked_key}")
@@ -141,7 +141,7 @@ class OmniRealtimeClient:
             raise ValueError(f"Invalid turn detection mode: {self.turn_detection_mode}")
 
     def _mask_api_key(self, api_key: str) -> str:
-        """隐藏API Key的中间部分"""
+        """只保留 API Key 前后各 4 位，中间以 ... 代替"""
         if not api_key or len(api_key) < 8:
             return "***"
         return f"{api_key[:4]}...{api_key[-4:]}"
@@ -151,7 +151,7 @@ class OmniRealtimeClient:
         
         # 只在详细模式下打印发送的事件
         if self.enable_verbose_logging:
-            print(f"📤 Send event: type={event['type']}, event_id={event['event_id']}")
+            print(f"Send event: type={event['type']}, event_id={event['event_id']}")
         
         await self.ws.send(json.dumps(event))
 
@@ -160,7 +160,7 @@ class OmniRealtimeClient:
         event = {"type": "session.update", "session": config}
         
         # 简化session配置的显示
-        print(f"🔧 更新会话配置: 音频格式={config.get('input_audio_format')}, 语音={config.get('voice')}")
+        print(f"更新会话配置: 音频格式={config.get('input_audio_format')}, 语音={config.get('voice')}")
         
         await self.send_event(event)
 
@@ -184,7 +184,7 @@ class OmniRealtimeClient:
             },
         }
         
-        print("🤖 请求生成响应...")
+        print("请求生成响应...")
         await self.send_event(event)
 
     async def cancel_response(self) -> None:
@@ -197,7 +197,7 @@ class OmniRealtimeClient:
         if not self._is_responding:
             return
 
-        print("⚡ 处理中断")
+        print("处理中断")
 
         # 1. Cancel the current response
         if self._current_response_id:
@@ -215,16 +215,16 @@ class OmniRealtimeClient:
 
                 # 只在详细模式下打印所有事件
                 if self.enable_verbose_logging and event_type != "response.audio.delta":
-                    print(f"📥 event: {event_type}")
+                    print(f"event: {event_type}")
 
                 if event_type == "error":
-                    print("❌ Error: ", event["error"])
+                    print("Error: ", event["error"])
                     continue
                 elif event_type == "response.created":
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._response_text_buffer = ""  # 重置文本缓冲区
-                    print("🎯 开始生成响应...")
+                    print("开始生成响应...")
                 elif event_type == "response.output_item.added":
                     self._current_item_id = event.get("item", {}).get("id")
                 elif event_type == "response.done":
@@ -234,23 +234,23 @@ class OmniRealtimeClient:
                     
                     # 输出完整的响应文本
                     if self._response_text_buffer:
-                        print(f"\n💬 AI响应: {self._response_text_buffer}\n")
+                        print(f"\nAI 响应: {self._response_text_buffer}\n")
                         self._response_text_buffer = ""
                     
-                    print("✅ 响应生成完成")
+                    print("响应生成完成")
                 # Handle interruptions
                 elif event_type == "input_audio_buffer.speech_started":
                     if self.enable_verbose_logging:
-                        print("🎤 检测到语音开始")
+                        print("检测到语音开始")
                     if self._is_responding:
-                        print("⚡ 触发中断处理")
+                        print("触发中断处理")
                         await self.handle_interruption()
 
                     if self.on_interrupt:
                         self.on_interrupt()
                 elif event_type == "input_audio_buffer.speech_stopped":
                     if self.enable_verbose_logging:
-                        print("🔇 检测到语音结束")
+                        print("检测到语音结束")
                 # Handle normal response events
                 elif event_type == "response.text.delta":
                     if self.on_text_delta:
@@ -267,7 +267,7 @@ class OmniRealtimeClient:
                 ):
                     transcript = event.get("transcript", "")
                     if transcript:
-                        print(f"\n🗣️ 用户说: {transcript}\n")
+                        print(f"\n用户说: {transcript}\n")
                     if self.on_input_transcript:
                         await asyncio.to_thread(self.on_input_transcript, transcript)
                         self._print_input_transcript = True
@@ -291,9 +291,9 @@ class OmniRealtimeClient:
                     self.extra_event_handlers[event_type](event)
 
         except websockets.exceptions.ConnectionClosed:
-            print("📡 连接已关闭")
+            print("连接已关闭")
         except Exception as e:
-            print("❌ 消息处理错误: ", str(e))
+            print("消息处理错误: ", str(e))
 
     async def close(self) -> None:
         """Close the WebSocket connection."""

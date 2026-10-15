@@ -1,3 +1,13 @@
+"""
+多音字拼音标注工具的调试入口。
+
+init_pinyin() 先加载 pypinyin 的大词典，再叠加本文件的 phrases_dict：
+词语级纠正（如「开户行」读 kai-hu-hang）与单字读音覆盖（「地」de/di4、「调」tiao2/diao4）。
+get_pinyin() 用空格连接各字拼音，输出即离线命令词匹配所用的标签串。
+
+依赖：pypinyin、pypinyin_dict。
+"""
+
 from pypinyin import lazy_pinyin
 from pypinyin import load_phrases_dict
 from pypinyin import load_single_dict

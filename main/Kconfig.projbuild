@@ -4,15 +4,15 @@ menu "ESP-AI 智能语音助手配置"
         bool "启用大模型对话（需要 WiFi 与电脑上的 server.py）"
         default y
         help
-            打开：唤醒 → 先匹配本地命令词（开灯/关灯/拜拜）→ 没匹配上就把
-                  音频通过 WebSocket 发给电脑端大模型，进行多轮对话。
-            关闭：纯离线模式，只用本地唤醒词 + 命令词，不连接网络。
+            启用后：唤醒时先匹配本地命令词（开灯/关灯/拜拜），未命中则把音频
+            通过 WebSocket 发给电脑端大模型做多轮对话。
+            关闭后为纯离线模式，仅使用本地唤醒词与命令词，不联网。
 
     config APP_WIFI_SSID
         string "WiFi 名称 (SSID)"
         default ""
         help
-            留空表示不联网（等价于离线模式）。
+            留空表示不联网，等同于离线模式。
 
     config APP_WIFI_PASSWORD
         string "WiFi 密码"
@@ -22,7 +22,7 @@ menu "ESP-AI 智能语音助手配置"
         string "大模型服务端地址 (WebSocket)"
         default "ws://192.168.1.100:8888"
         help
-            电脑上运行 server/server.py 后打印出来的地址，注意填电脑的局域网 IP。
+            运行 server/server.py 后打印的地址，需填电脑的局域网 IP。
 
     config APP_LED_GPIO
         int "LED 指示灯 GPIO"

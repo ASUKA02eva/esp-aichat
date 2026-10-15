@@ -1,6 +1,6 @@
 /**
  * @file led_controller.cc
- * @brief 外接 LED 控制器实现
+ * @brief 外接 LED 控制器实现。
  */
 
 #include "led_controller.h"
@@ -21,7 +21,7 @@ LightController::LightController(gpio_num_t pin)
 
 esp_err_t LightController::init()
 {
-    ESP_LOGI(TAG, "初始化外接 LED (GPIO%d)...", pin_);
+    ESP_LOGI(TAG, "初始化 LED（GPIO%d）", pin_);
 
     gpio_config_t io_conf = {};
     io_conf.pin_bit_mask = (1ULL << pin_);
@@ -39,7 +39,7 @@ esp_err_t LightController::init()
 
     initialized_ = true;
     apply(false); // 初始熄灭
-    ESP_LOGI(TAG, "✓ LED 初始化成功 (GPIO%d)，初始状态：熄灭", pin_);
+    ESP_LOGI(TAG, "LED 初始化完成（GPIO%d），初始为熄灭", pin_);
     return ESP_OK;
 }
 
@@ -56,13 +56,13 @@ void LightController::apply(bool on)
 void LightController::turnOn()
 {
     apply(true);
-    ESP_LOGI(TAG, "💡 LED 点亮");
+    ESP_LOGI(TAG, "LED 点亮");
 }
 
 void LightController::turnOff()
 {
     apply(false);
-    ESP_LOGI(TAG, "🌑 LED 熄灭");
+    ESP_LOGI(TAG, "LED 熄灭");
 }
 
 void LightController::toggle()

@@ -1,30 +1,7 @@
 /**
  * @file main.cc
- * @brief ESP-AI 智能语音助手 —— 统一固件
- *
- * 这个文件把原来 examples/ 下 5 个互相独立的示例合并成一条完整的交互链路：
- *
- *   ┌ 待唤醒 ──────────── 说“你好小智” 或 按按键 ─────────────┐
- *   │                                                        │
- *   │   ▼                                                    │
- *   │ ① 播放欢迎音，通知服务端“已唤醒”                        │
- *   │ ② 进入听写状态：本地命令词识别 + 边说边传给服务端        │
- *   │      · 命中 “帮我开灯 / 帮我关灯” → LED(+舵机动作) + 确认音
- *   │      · 命中 “拜拜”                → 退出对话
- *   │      · 命中自定义命令             → 播放自定义音频
- *   │ ③ VAD 检测到“说完了” → 等大模型回复（流式播放）          │
- *   │ ④ 回复播完 → 回到 ② 连续对话（不用再说唤醒词）           │
- *   │ ⑤ 说“拜拜”或超时无语音 → 回到待唤醒                      │
- *   └────────────────────────────────────────────────────────┘
- *
- * 硬件（沿用原示例的“小智 AI 标准接线”）：
- *   INMP441 麦克风 : VDD→3V3, GND→GND, SD→GPIO6, WS→GPIO4, SCK→GPIO5
- *   MAX98357A 功放 : VIN→3V3, GND→GND, DIN→GPIO7, BCLK→GPIO15, LRC→GPIO16
- *   LED            : 长脚→GPIO21, 短脚→GND（串限流电阻）
- *   按键           : 一端→3V3, 另一端→GPIO41（按下为高电平）
- *   SG90 舵机      : 红线→5V, 棕线→GND, 橙线→GPIO18
- *
- * 引脚都可在 idf.py menuconfig → ESP-AI 智能语音助手配置 中修改。
+ * @brief 主状态机：待唤醒 → 听写 → 等回复。
+ * 状态机只负责调度，本地命令词命中即离线响应，未命中才把音频交给大模型，音频收发由 AudioManager 完成。
  */
 
 extern "C"
@@ -69,9 +46,6 @@ extern "C"
 
 static const char *TAG = "aichat";
 
-// ============================================================================
-// 全局对象
-// ============================================================================
 static VoiceEngine s_voice;
 static AudioManager *s_audio = nullptr;
 static LightController s_led(APP_LED_GPIO);
@@ -91,13 +65,10 @@ static WebSocketClient *s_ws = nullptr;
 
 static vad_handle_t s_vad = nullptr;
 
-// ============================================================================
-// 运行状态
-// ============================================================================
 enum AppState
 {
     STATE_WAITING_WAKEUP = 0, // 待唤醒：听唤醒词 / 等按键
-    STATE_RECORDING,          // 听写中：识别本地命令词 + 把音频传给大模型
+    STATE_RECORDING,          // 听写中：识别本地命令词，同时把音频传给大模型
     STATE_WAITING_RESPONSE,   // 等大模型回复
 };
 
@@ -109,12 +80,10 @@ static int s_silence_frames = 0;     // 连续静音帧计数
 static TickType_t s_idle_start = 0;  // “等用户说话”的计时起点（0 表示用户已在说话）
 static TickType_t s_response_start = 0; // “等大模型回复”的计时起点（兜底防卡死）
 
-// 等待大模型回复的最长时间（兜底：服务端异常时不至于永远卡住）
+// 等待大模型回复的最长时间（兜底：服务端异常时不至于一直卡住）
 #define APP_RESPONSE_TIMEOUT_MS (45 * 1000)
 
-// ============================================================================
-// 与大模型服务端通信（未启用 / 未连上时这些函数是空操作）
-// ============================================================================
+// 大模型通信：未启用或未连上服务端时，以下函数为空操作
 static void llm_send(const char *json)
 {
 #if CONFIG_APP_LLM_ENABLE
@@ -141,22 +110,18 @@ static void llm_send_audio(const int16_t *pcm, size_t samples)
 }
 
 #if CONFIG_APP_LLM_ENABLE
-/**
- * @brief 服务端消息回调（运行在 WebSocket 任务里）
- *
- * 约定的协议（与 server/server.py 一致）：
- *   服务端 → 设备：二进制帧 = 一段 AI 语音（16bit PCM）；ping 帧 = 本轮回话结束
- */
+// 服务端消息回调，运行在 WebSocket 任务里
+// 协议：二进制帧为一段 AI 语音（16bit PCM），ping 帧表示本轮回话结束
 static void on_websocket_event(const WebSocketClient::EventData &event)
 {
     switch (event.type)
     {
     case WebSocketClient::EventType::CONNECTED:
-        ESP_LOGI(TAG, "🔗 服务端已连接");
+        ESP_LOGI(TAG, "服务端已连接");
         break;
 
     case WebSocketClient::EventType::DISCONNECTED:
-        ESP_LOGW(TAG, "🔌 服务端已断开");
+        ESP_LOGW(TAG, "服务端已断开");
         break;
 
     case WebSocketClient::EventType::DATA_BINARY:
@@ -203,7 +168,7 @@ static void on_websocket_event(const WebSocketClient::EventData &event)
         break;
 
     case WebSocketClient::EventType::ERROR:
-        ESP_LOGW(TAG, "❌ 服务端连接出错");
+        ESP_LOGW(TAG, "服务端连接出错");
         break;
 
     default:
@@ -212,15 +177,9 @@ static void on_websocket_event(const WebSocketClient::EventData &event)
 }
 #endif // CONFIG_APP_LLM_ENABLE
 
-// ============================================================================
-// 局部动作：LED / 舵机
-// ============================================================================
 #if CONFIG_APP_ENABLE_SERVO
-/**
- * @brief 舵机“点一下头”：转出去再转回来，作为命令已执行的物理反馈
- *
- * @param clockwise true=顺时针，false=逆时针
- */
+// 舵机摆动一次（转出后原路返回），作为命令已执行的物理反馈
+// clockwise：true 顺时针，false 逆时针
 static void servo_gesture(bool clockwise)
 {
     if (APP_CMD_ROTATE_DEG <= 0)
@@ -234,14 +193,10 @@ static void servo_gesture(bool clockwise)
 }
 #endif
 
-// ============================================================================
-// 状态切换
-// ============================================================================
-
-/** 回到待唤醒状态 */
+// 回到待唤醒状态
 static void exit_dialog()
 {
-    ESP_LOGI(TAG, "👋 结束对话，回到待唤醒状态");
+    ESP_LOGI(TAG, "结束对话，回到待唤醒状态");
     s_audio->playAudio(byebye, byebye_len, "再见音频");
 
 #if CONFIG_APP_LLM_ENABLE
@@ -262,7 +217,7 @@ static void exit_dialog()
     s_response_start = 0;
 }
 
-/** 开始一轮听写（continuous=true 表示连续对话，不用再说唤醒词） */
+// 开始一轮听写（continuous=true 表示连续对话，不用再说唤醒词）
 static void start_listening(bool continuous)
 {
     s_state = STATE_RECORDING;
@@ -281,14 +236,14 @@ static void start_listening(bool continuous)
 
     if (continuous)
     {
-        ESP_LOGI(TAG, "🎙️ 继续听写中（连续对话，可直接说话）");
+        ESP_LOGI(TAG, "继续听写（连续对话，可直接说话）");
     }
 }
 
-/** 唤醒（唤醒词或按键触发） */
+// 唤醒（唤醒词或按键触发）
 static void on_wake_detected()
 {
-    ESP_LOGI(TAG, "🎉 已唤醒");
+    ESP_LOGI(TAG, "已唤醒");
     s_led.blink(1); // 视觉反馈，且不改变 LED 原来的亮灭状态
 
 #if CONFIG_APP_LLM_ENABLE
@@ -296,7 +251,7 @@ static void on_wake_detected()
     {
         if (s_ws != nullptr && !s_ws->isConnected())
         {
-            ESP_LOGI(TAG, "服务端未连接，尝试重连...");
+            ESP_LOGI(TAG, "服务端未连接，尝试重连");
             s_ws->connect();
             vTaskDelay(pdMS_TO_TICKS(500));
         }
@@ -316,11 +271,8 @@ static void on_wake_detected()
     start_listening(false);
 }
 
-/**
- * @brief 执行本地命令词（离线响应，不需要联网）
- *
- * 开关灯同时驱动 LED 和舵机：LED 表示“灯”的状态，舵机给出物理动作反馈。
- */
+// 执行本地命令词：离线响应，不需要联网
+// 开关灯同时驱动 LED 与舵机，LED 表示灯的状态，舵机给出物理动作反馈
 static void run_local_command(int command_id)
 {
     // 命令是在“边说边传”的过程中命中的，先把这一轮上传作废，避免服务端收到半句话
@@ -333,7 +285,7 @@ static void run_local_command(int command_id)
     switch (command_id)
     {
     case VOICE_CMD_TURN_ON_LIGHT:
-        ESP_LOGI(TAG, "💡 执行【开灯】");
+        ESP_LOGI(TAG, "执行开灯");
         s_led.turnOn();
 #if CONFIG_APP_ENABLE_SERVO
         servo_gesture(true);
@@ -342,7 +294,7 @@ static void run_local_command(int command_id)
         break;
 
     case VOICE_CMD_TURN_OFF_LIGHT:
-        ESP_LOGI(TAG, "🌑 执行【关灯】");
+        ESP_LOGI(TAG, "执行关灯");
         s_led.turnOff();
 #if CONFIG_APP_ENABLE_SERVO
         servo_gesture(false);
@@ -351,7 +303,7 @@ static void run_local_command(int command_id)
         break;
 
     case VOICE_CMD_CUSTOM:
-        ESP_LOGI(TAG, "🧩 执行【自定义命令】");
+        ESP_LOGI(TAG, "执行自定义命令");
         s_audio->playAudio(custom, custom_len, "自定义命令音频");
         break;
 
@@ -380,7 +332,7 @@ static void run_local_command(int command_id)
     }
 }
 
-/** 本轮录音结束：要么把音频交给大模型，要么继续待命 */
+// 本轮录音结束：要么把音频交给大模型，要么继续待命
 static void finish_recording()
 {
     s_audio->stopRecording();
@@ -406,7 +358,7 @@ static void finish_recording()
         s_state = STATE_WAITING_RESPONSE;
         s_response_start = xTaskGetTickCount();
         s_audio->resetResponsePlayedFlag();
-        ESP_LOGI(TAG, "⏳ 已发送 %.2f 秒音频，等待大模型回复...", s_audio->getRecordingDuration());
+        ESP_LOGI(TAG, "已发送 %.2f 秒音频，等待大模型回复", s_audio->getRecordingDuration());
         return;
     }
 #endif
@@ -416,10 +368,10 @@ static void finish_recording()
     start_listening(true);
 }
 
-/** 听写状态下的每帧处理 */
+// 听写状态下每帧处理
 static void handle_recording(const int16_t *audio, int samples)
 {
-    // ① 本地命令词优先（离线、零延迟）
+    // 本地命令词优先，命中即离线响应
     int command_id = s_voice.detect_command(audio);
     if (command_id != VOICE_CMD_NONE)
     {
@@ -427,20 +379,20 @@ static void handle_recording(const int16_t *audio, int samples)
         return;
     }
 
-    // ② 录音缓冲 + 边说边传给服务端
+    // 录音缓冲，同时边说边传给服务端
     if (s_audio->isRecording() && !s_audio->isRecordingBufferFull())
     {
         s_audio->addRecordingData(audio, samples);
         llm_send_audio(audio, samples);
     }
 
-    // ③ VAD 判断用户是否在说话
+    // VAD 判断用户是否在说话
     vad_state_t vad = vad_process(s_vad, (int16_t *)audio, APP_SAMPLE_RATE, APP_VAD_FRAME_MS);
     if (vad == VAD_SPEECH)
     {
         if (!s_user_spoke)
         {
-            ESP_LOGI(TAG, "🗣️ 检测到说话，开始录音/传输");
+            ESP_LOGI(TAG, "检测到说话，开始录音与上传");
         }
         s_user_spoke = true;
         s_silence_frames = 0;
@@ -457,38 +409,35 @@ static void handle_recording(const int16_t *audio, int samples)
         s_silence_frames++;
         if (s_silence_frames >= APP_VAD_SILENCE_FRAMES)
         {
-            ESP_LOGI(TAG, "🤐 检测到说话结束（录音 %.2f 秒）", s_audio->getRecordingDuration());
+            ESP_LOGI(TAG, "检测到说话结束（录音 %.2f 秒）", s_audio->getRecordingDuration());
             finish_recording();
             return;
         }
     }
 
-    // ④ 录音缓冲满 → 本轮结束
+    // 录音缓冲满，本轮结束
     if (s_audio->isRecordingBufferFull())
     {
-        ESP_LOGW(TAG, "⏹️ 达到单次最长录音时长（%d 秒）", APP_MAX_RECORDING_SEC);
+        ESP_LOGW(TAG, "达到单次最长录音时长（%d 秒）", APP_MAX_RECORDING_SEC);
         finish_recording();
         return;
     }
 
-    // ⑤ 一直没说话 → 超时退出
+    // 长时间没说话则超时退出
     if (!s_user_spoke && s_idle_start != 0)
     {
         TickType_t now = xTaskGetTickCount();
         if ((now - s_idle_start) > pdMS_TO_TICKS(APP_IDLE_TIMEOUT_MS))
         {
-            ESP_LOGW(TAG, "⏰ %d 秒没有听到说话，结束对话", APP_IDLE_TIMEOUT_MS / 1000);
+            ESP_LOGW(TAG, "等待说话超时（%d 秒），结束对话", APP_IDLE_TIMEOUT_MS / 1000);
             exit_dialog();
         }
     }
 }
 
-// ============================================================================
-// 主入口
-// ============================================================================
 extern "C" void app_main(void)
 {
-    // ---------- ① NVS（WiFi 需要） ----------
+    // NVS 初始化（WiFi 依赖）
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
     {
@@ -497,9 +446,9 @@ extern "C" void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    ESP_LOGI(TAG, "=========== ESP-AI 智能语音助手启动 ===========");
+    ESP_LOGI(TAG, "ESP-AI 智能语音助手启动");
 
-    // ---------- ② 本地外设 ----------
+    // 本地外设
     s_led.init();
 
 #if CONFIG_APP_ENABLE_SERVO
@@ -516,12 +465,12 @@ extern "C" void app_main(void)
     }
 #endif
 
-    // ---------- ③ 网络与大模型服务端（可选） ----------
+    // 网络与大模型服务端（可选）
 #if CONFIG_APP_LLM_ENABLE
     s_llm_enabled = (strlen(CONFIG_APP_WIFI_SSID) > 0);
     if (!s_llm_enabled)
     {
-        ESP_LOGW(TAG, "未配置 WiFi（menuconfig → ESP-AI 智能语音助手配置）→ 离线模式");
+        ESP_LOGW(TAG, "未配置 WiFi，进入离线模式");
     }
     else
     {
@@ -529,7 +478,7 @@ extern "C" void app_main(void)
         s_wifi = new WiFiManager(CONFIG_APP_WIFI_SSID, CONFIG_APP_WIFI_PASSWORD);
         if (s_wifi->connect() != ESP_OK)
         {
-            ESP_LOGE(TAG, "WiFi 连接失败 → 降级为离线模式");
+            ESP_LOGE(TAG, "WiFi 连接失败，降级为离线模式");
             delete s_wifi;
             s_wifi = nullptr;
             s_llm_enabled = false;
@@ -543,7 +492,7 @@ extern "C" void app_main(void)
         s_ws->setEventCallback(on_websocket_event);
         if (s_ws->connect() != ESP_OK)
         {
-            ESP_LOGE(TAG, "服务端连接失败（确认电脑上已运行 server/server.py）→ 降级为离线模式");
+            ESP_LOGE(TAG, "服务端连接失败（确认电脑上已运行 server/server.py），降级为离线模式");
             delete s_ws;
             s_ws = nullptr;
             s_llm_enabled = false;
@@ -555,8 +504,8 @@ extern "C" void app_main(void)
     ESP_LOGI(TAG, "大模型对话: 已在 menuconfig 中关闭（离线模式）");
 #endif
 
-    // ---------- ④ 音频硬件 ----------
-    ESP_LOGI(TAG, "初始化麦克风 INMP441（16kHz / 单声道 / 16bit）...");
+    // 音频硬件
+    ESP_LOGI(TAG, "初始化麦克风 INMP441（16kHz / 单声道 / 16bit）");
     ret = bsp_board_init(APP_SAMPLE_RATE, 1, 16);
     if (ret != ESP_OK)
     {
@@ -565,7 +514,7 @@ extern "C" void app_main(void)
         return;
     }
 
-    ESP_LOGI(TAG, "初始化功放 MAX98357A（16kHz / 单声道 / 16bit）...");
+    ESP_LOGI(TAG, "初始化功放 MAX98357A（16kHz / 单声道 / 16bit）");
     ret = bsp_audio_init(APP_SAMPLE_RATE, 1, 16);
     if (ret != ESP_OK)
     {
@@ -574,7 +523,7 @@ extern "C" void app_main(void)
         return;
     }
 
-    // ---------- ⑤ VAD（判断“开始说话 / 说完了”） ----------
+    // VAD：判断用户开始说话与说话结束
     s_vad = vad_create_with_param(VAD_MODE_1, APP_SAMPLE_RATE, APP_VAD_FRAME_MS,
                                   APP_VAD_MIN_SPEECH_MS, APP_VAD_MIN_NOISE_MS);
     if (s_vad == NULL)
@@ -583,18 +532,18 @@ extern "C" void app_main(void)
         return;
     }
 
-    // ---------- ⑥ 语音引擎（唤醒词 + 命令词 + 降噪） ----------
+    // 语音引擎：唤醒词、命令词、降噪
     if (s_voice.init() != ESP_OK)
     {
         ESP_LOGE(TAG, "语音引擎初始化失败，请检查模型是否已烧录");
         return;
     }
 
-    // ---------- ⑦ 音频管理器（录音缓冲 / 播放 / 流式播放） ----------
+    // 音频管理器：录音缓冲、播放、流式播放
     s_audio = new AudioManager(APP_SAMPLE_RATE, APP_MAX_RECORDING_SEC, 32);
     if (s_audio->init() != ESP_OK)
     {
-        ESP_LOGE(TAG, "音频管理器初始化失败（内存不足？）");
+        ESP_LOGE(TAG, "音频管理器初始化失败（可能内存不足）");
         delete s_audio;
         s_audio = nullptr;
         return;
@@ -608,8 +557,8 @@ extern "C" void app_main(void)
         return;
     }
 
-    // ---------- ⑧ 打印配置 & 支持的指令 ----------
-    ESP_LOGI(TAG, "--------------- 配置汇总 ---------------");
+    // 启动配置与支持的命令
+    ESP_LOGI(TAG, "配置汇总");
     ESP_LOGI(TAG, "唤醒词模型 : %s", s_voice.wake_model());
     ESP_LOGI(TAG, "命令词模型 : %s", s_voice.command_model());
     ESP_LOGI(TAG, "噪声抑制   : %s", s_voice.noise_suppression_enabled() ? "开" : "关");
@@ -631,10 +580,10 @@ extern "C" void app_main(void)
     {
         ESP_LOGI(TAG, "  · %s", s_voice.commands()[i].description);
     }
-    ESP_LOGI(TAG, "----------------------------------------");
-    ESP_LOGI(TAG, "✅ 系统就绪，请说“你好小智”或按按键开始对话");
+    ESP_LOGI(TAG, "配置汇总结束");
+    ESP_LOGI(TAG, "系统就绪，请说“你好小智”或按按键开始对话");
 
-    // ---------- ⑨ 主循环 ----------
+    // 主循环
     while (true)
     {
         ret = bsp_get_feed_data(false, frame, frame_bytes);
@@ -675,11 +624,11 @@ extern "C" void app_main(void)
             {
                 llm_send("{\"event\":\"recording_started\"}");
                 start_listening(true);
-                ESP_LOGI(TAG, "💬 连续对话中：可以继续提问、下命令，或说“拜拜”结束");
+                ESP_LOGI(TAG, "连续对话中：可继续提问、下命令，或说“拜拜”结束");
             }
             else if ((xTaskGetTickCount() - s_response_start) > pdMS_TO_TICKS(APP_RESPONSE_TIMEOUT_MS))
             {
-                ESP_LOGW(TAG, "⏰ 等待大模型回复超时，结束对话");
+                ESP_LOGW(TAG, "等待大模型回复超时，结束对话");
                 exit_dialog();
             }
             break;

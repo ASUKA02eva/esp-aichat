@@ -1,22 +1,8 @@
 /**
  * @file servo_controller.h
- * @brief ESP32-S3 舵机控制器类定义
+ * @brief ServoController：舵机 LEDC PWM 控制接口
  *
- * 本文件定义了ServoController类，用于封装舵机控制的所有功能，包括：
- * 1. 舵机PWM初始化和配置
- * 2. 舵机角度控制（绝对角度设置）
- * 3. 舵机旋转控制（相对角度旋转）
- * 4. 舵机状态管理
- *
- * 硬件要求：
- * - ESP32-S3开发板
- * - 舵机信号线接在构造函数指定的引脚上（默认 GPIO18）
- *   连接方式：红线->5V/3.3V, 棕线->GND, 橙线->GPIO18
- *
- * PWM参数：
- * - 频率：50Hz
- * - 脉宽范围：0.5ms-2.5ms对应0-180度
- * - 分辨率：13位（8192级别）
+ * 信号引脚由构造函数指定（默认 GPIO18）；PWM 50Hz、13 位分辨率，脉宽 0.5~2.5ms 对应 0~180 度。
  */
 
 #pragma once
@@ -28,11 +14,6 @@ extern "C" {
 #include "esp_err.h"
 }
 
-/**
- * @brief 舵机控制器类
- * 
- * 封装了舵机控制的所有功能，提供简洁易用的API接口
- */
 class ServoController {
 public:
     // 舵机PWM配置常量（信号引脚由构造函数指定，默认 GPIO18）
@@ -53,91 +34,31 @@ public:
     static constexpr int CENTER_ANGLE = 90; // 中心角度
 
 public:
-    /**
-     * @brief 构造函数
-     *
-     * @param gpio 舵机 PWM 信号引脚（默认 GPIO18）
-     */
+    // gpio 为 PWM 信号引脚，默认 GPIO18
     explicit ServoController(gpio_num_t gpio = GPIO_NUM_18);
 
-    /**
-     * @brief 析构函数
-     */
     ~ServoController();
 
-    /**
-     * @brief 初始化舵机PWM控制
-     * 
-     * 配置GPIO18为PWM输出模式，用于控制舵机
-     * PWM频率：50Hz，脉宽范围：0.5ms-2.5ms对应0-180度
-     * 
-     * @return esp_err_t 
-     *         - ESP_OK: 初始化成功
-     *         - ESP_FAIL: 初始化失败
-     */
+    // 配置 LEDC 定时器和通道，并把舵机摆到中位；任一环节失败都返回错误码
     esp_err_t init();
 
-    /**
-     * @brief 设置舵机角度（绝对角度）
-     * 
-     * @param angle 目标角度（0-180度）
-     * @return esp_err_t 
-     *         - ESP_OK: 设置成功
-     *         - ESP_ERR_INVALID_ARG: 角度参数无效
-     *         - ESP_FAIL: 设置失败
-     */
+    // angle 超出 0~180 会被钳位；未初始化时返回 ESP_ERR_INVALID_STATE
     esp_err_t setAngle(int angle);
 
-    /**
-     * @brief 舵机旋转指定角度（相对角度）
-     * 
-     * @param angle 旋转角度，正数为顺时针，负数为逆时针
-     * @return esp_err_t 
-     *         - ESP_OK: 旋转成功
-     *         - ESP_ERR_INVALID_ARG: 角度参数无效
-     *         - ESP_FAIL: 旋转失败
-     */
+    // 相对当前角度旋转：正数顺时针，负数逆时针；angle 为 0 时直接返回 ESP_OK
     esp_err_t rotate(int angle);
 
-    /**
-     * @brief 获取当前舵机角度
-     * 
-     * @return int 当前角度（0-180度）
-     */
     int getCurrentAngle() const;
 
-    /**
-     * @brief 重置舵机到中心位置（90度）
-     * 
-     * @return esp_err_t 
-     *         - ESP_OK: 重置成功
-     *         - ESP_FAIL: 重置失败
-     */
+    // 等价于 setAngle(CENTER_ANGLE)
     esp_err_t resetToCenter();
 
-    /**
-     * @brief 检查舵机是否已初始化
-     * 
-     * @return true 已初始化
-     * @return false 未初始化
-     */
     bool isInitialized() const;
 
 private:
-    /**
-     * @brief 计算角度对应的PWM占空比
-     * 
-     * @param angle 角度（0-180度）
-     * @return uint32_t PWM占空比值
-     */
+    // 输入角度先钳位到 0~180，再换算成 13 位分辨率下的 LEDC 占空比
     uint32_t calculateDuty(int angle) const;
 
-    /**
-     * @brief 限制角度范围
-     * 
-     * @param angle 输入角度
-     * @return int 限制后的角度（0-180度）
-     */
     int constrainAngle(int angle) const;
 
 private:
