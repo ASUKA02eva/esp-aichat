@@ -1,0 +1,11 @@
+## 依赖版本说明
+##
+## esp-sr 2.2 起把部分能力改由 esp-dl 提供，而 esp-dl 需要 ESP-IDF >= 5.5；
+## 本工程面向 ESP-IDF 5.4，且 2.1.3 是原示例验证过、可稳定编译的版本，
+## 因此这里锁定到 2.1.3，而不是用 ^2.1.0（会漂移到 2.6.x 导致编译失败：
+##   managed_components/espressif__esp-dl/...: 'MALLOC_CAP_SIMD' was not declared）。
+##
+## 如果你把 ESP-IDF 升级到 5.5 及以上，可以放宽为 "^2.1.0" 或去掉版本约束。
+dependencies:
+  idf: ">=5.4"
+  espressif/esp-sr: "==2.1.3"

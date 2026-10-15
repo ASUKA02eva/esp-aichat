@@ -1,0 +1,3 @@
+dependencies:
+  # 与原示例 dependencies.lock 里验证过的版本保持一致，避免新版本引入不兼容变更
+  espressif/esp_websocket_client: "==1.4.0"

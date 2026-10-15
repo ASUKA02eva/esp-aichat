@@ -1,0 +1,69 @@
+menu "ESP-AI 智能语音助手配置"
+
+    config APP_LLM_ENABLE
+        bool "启用大模型对话（需要 WiFi 与电脑上的 server.py）"
+        default y
+        help
+            打开：唤醒 → 先匹配本地命令词（开灯/关灯/拜拜）→ 没匹配上就把
+                  音频通过 WebSocket 发给电脑端大模型，进行多轮对话。
+            关闭：纯离线模式，只用本地唤醒词 + 命令词，不连接网络。
+
+    config APP_WIFI_SSID
+        string "WiFi 名称 (SSID)"
+        default ""
+        help
+            留空表示不联网（等价于离线模式）。
+
+    config APP_WIFI_PASSWORD
+        string "WiFi 密码"
+        default ""
+
+    config APP_WS_URI
+        string "大模型服务端地址 (WebSocket)"
+        default "ws://192.168.1.100:8888"
+        help
+            电脑上运行 server/server.py 后打印出来的地址，注意填电脑的局域网 IP。
+
+    config APP_LED_GPIO
+        int "LED 指示灯 GPIO"
+        range 0 48
+        default 21
+
+    config APP_ENABLE_BUTTON
+        bool "启用按键唤醒（等同于说唤醒词）"
+        default y
+
+    config APP_BUTTON_GPIO
+        int "按键 GPIO"
+        range 0 48
+        default 41
+
+    config APP_ENABLE_SERVO
+        bool "启用舵机控制（开关灯时转一下作为动作反馈）"
+        default y
+
+    config APP_SERVO_GPIO
+        int "舵机 PWM 信号 GPIO"
+        range 0 48
+        default 18
+
+    config APP_IDLE_TIMEOUT_MS
+        int "等待说话 / 等待命令的超时时间 (毫秒)"
+        default 10000
+
+    config APP_CMD_CONFIRM_ROTATE_DEG
+        int "开关灯时舵机转动角度 (度)"
+        range 0 180
+        default 45
+
+    config APP_MAX_RECORDING_SEC
+        int "单次最长录音时长 (秒)"
+        range 1 30
+        default 10
+
+    config APP_VAD_SILENCE_MS
+        int "VAD 判定“说完了”所需的静音时长 (毫秒)"
+        range 100 3000
+        default 600
+
+endmenu

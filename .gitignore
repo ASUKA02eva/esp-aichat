@@ -1,0 +1,16 @@
+# ESP-IDF 构建产物
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+
+# 编辑器 / 系统
+.vscode
+.idea
+.DS_Store
+__pycache__
+
+# 服务端运行时产物
+server/user_records
+server/response_records

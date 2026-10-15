@@ -1,0 +1,16 @@
+idf_component_register(SRCS
+                       "main.cc"
+                       "voice_engine.cc"
+                       INCLUDE_DIRS
+                       "."
+                       REQUIRES
+                       bsp_board
+                       audio_manager
+                       wifi_manager
+                       ws_client
+                       led_control
+                       button_control
+                       servo_control
+                       voice_assets
+                       esp_timer
+                       )

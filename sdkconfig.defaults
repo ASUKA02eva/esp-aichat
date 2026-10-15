@@ -1,0 +1,41 @@
+# ============================================================================
+# 默认配置（所有目标通用）
+#   目标相关配置见 sdkconfig.defaults.esp32s3
+#   应用级配置可在 idf.py menuconfig → ESP-AI 智能语音助手配置 中修改
+# ============================================================================
+
+# ---- Flash / 分区表 ----
+# 语音模型很大，必须使用自定义分区表（见根目录 partitions.csv）
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_MD5=y
+
+# ---- ESP-SR 语音模型 ----
+# 唤醒词："你好小智"；命令词：MultiNet7 中文
+CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y
+CONFIG_SR_MN_CN_MULTINET7_QUANT=y
+CONFIG_SR_MN_EN_NONE=y
+# 模型放 Flash（启动快，省内存）
+CONFIG_MODEL_IN_FLASH=y
+
+# ---- 应用默认参数（可 menuconfig 修改）----
+# WiFi 名称留空 => 自动进入离线模式（仅本地唤醒词 + 命令词）
+CONFIG_APP_LLM_ENABLE=y
+CONFIG_APP_WIFI_SSID=""
+CONFIG_APP_WIFI_PASSWORD=""
+CONFIG_APP_WS_URI="ws://192.168.1.100:8888"
+
+# 外设
+CONFIG_APP_LED_GPIO=21
+CONFIG_APP_ENABLE_BUTTON=y
+CONFIG_APP_BUTTON_GPIO=41
+CONFIG_APP_ENABLE_SERVO=y
+CONFIG_APP_SERVO_GPIO=18
+
+# 行为
+CONFIG_APP_IDLE_TIMEOUT_MS=10000
+CONFIG_APP_CMD_CONFIRM_ROTATE_DEG=45
+CONFIG_APP_MAX_RECORDING_SEC=10
+CONFIG_APP_VAD_SILENCE_MS=600
